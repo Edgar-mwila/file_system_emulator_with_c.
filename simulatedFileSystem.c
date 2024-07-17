@@ -536,6 +536,53 @@ int do_szfil(char *name, char *size)
 
 /*--------------------------------------------------------------------------------*/
 
+//Function to list all files in te directory.
+struct file_data* do_ls(const char *path) {
+    // Get the current directory
+    dir_type *current_dir = malloc(BLOCK_SIZE);
+    if (current_dir == NULL) {
+        return NULL;
+    }
+
+    int block_index = find_block(current.directory, true);
+    if (block_index == -1) {
+        free(current_dir);
+        return NULL;
+    }
+
+    memcpy(current_dir, disk + block_index*BLOCK_SIZE, BLOCK_SIZE);
+
+    struct file_data *head = NULL;
+    struct file_data *tail = NULL;
+
+    for (int i = 0; i < current_dir->subitem_count; i++) {
+        struct file_data *new_file = malloc(sizeof(struct file_data));
+        if (new_file == NULL) {
+            // Handle memory allocation failure
+            // You should also free previously allocated nodes here
+            free(current_dir);
+            return NULL;
+        }
+
+        new_file->name = strdup(current_dir->subitem[i]);
+        new_file->is_directory = current_dir->subitem_type[i];
+        new_file->next = NULL;
+
+        if (head == NULL) {
+            head = new_file;
+            tail = new_file;
+        } else {
+            tail->next = new_file;
+            tail = new_file;
+        }
+    }
+
+    free(current_dir);
+    return head;
+}
+
+/*--------------------------------------------------------------------------------*/
+
 int do_exit(char *name, char *size)
 {
 	(void)*name;

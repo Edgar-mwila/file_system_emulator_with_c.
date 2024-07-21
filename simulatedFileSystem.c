@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include "simulatedFileSystem.h"
+#define ROOT_DIRECTORY_NAME "root"
 
 int debug = 1;
 
@@ -168,6 +169,39 @@ bool disk_allocated = false; // makes sure that do_root is first thing being cal
 //   return 0;
 // }
 
+/*--------------------------------------------------------------------------------*/
+
+//finding the blocks
+int find_block_by_path(const char *path) {
+    if (strcmp(path, "/") == 0) {
+        return find_block(ROOT_DIRECTORY_NAME, true);
+    }
+
+    char *path_copy = strdup(path);
+    char *saveptr;
+    char *token = strtok_r(path_copy, "/", &saveptr);
+    int current_block = find_block(ROOT_DIRECTORY_NAME, true);
+
+    while (token != NULL) {
+        dir_type *current_dir = (dir_type *)(disk + current_block * BLOCK_SIZE);
+        int found = 0;
+        for (int i = 0; i < current_dir->subitem_count; i++) {
+            if (strcmp(current_dir->subitem[i], token) == 0) {
+                current_block = find_block(current_dir->subitem[i], current_dir->subitem_type[i]);
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            free(path_copy);
+            return -1;  // Path not found
+        }
+        token = strtok_r(NULL, "/", &saveptr);
+    }
+
+    free(path_copy);
+    return current_block;
+}
 
 /*--------------------------------------------------------------------------------*/
 
@@ -247,217 +281,199 @@ int do_print(char *name, char *size)
 
 /*--------------------------------------------------------------------------------*/
 
+//change directory
 int do_chdir(char *name, char *size)
 {
-	(void)*size;
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
-	
-	//Case if ".." is the argument to "chdir"
-	if ( strcmp(name, ".." ) == 0 ) {
-		
-		//If we are in root directory then we can't go back
-		if ( strcmp(current.directory, "root") == 0 )
-			return 0;
-		
-		//Adjust the working_directory struct
-		strcpy ( current.directory, current.parent );	
-		strcpy (current.parent, get_directory_top_level( current.parent) );
-			if ( debug ) printf ("\t[%s] Current Directory is now [%s], Parent Directory is [%s]\n", __func__, current.directory, current.parent);
-		return 0;
-	}
-	else
-	{	
-		char tmp[20];
-
-		//Check to make sure it is a subdirectory that is to be changed
-		//If name is not in the current directory then returns -1, else return 0
-		if ( (strcmp(get_directory_subitem(current.directory, -1, name), "-1") == 0) && strcmp( current.parent, name ) != 0 ) {
-			if ( debug ) printf( "\t\t\t[%s] Cannot Change to Directory [%s]\n", __func__, name );
-			if (!debug ) printf( "%s: %s: No such file or directory\n", "chdir", name );
-			return 0;
-		}
-	
-		strcpy( tmp, get_directory_name(name));
-		if ( strcmp(tmp, "") == 0 )
-			return 0;
-		
-		if ( strcmp( tmp, name ) == 0 ) {
-			//Adjust the working_directory struct
-			strcpy ( current.directory, tmp);
-			
-
-			strcpy(current.parent, get_directory_top_level(name) );
-				if ( debug ) printf ("\t[%s] Current Directory is now [%s], Parent Directory is [%s]\n", __func__, current.directory, current.parent);
-			return 1;
-		}
-		return -1;
-	}
-  return 0;
+    (void)*size;
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return 0;
+    }
+    
+    if (strcmp(name, "..") == 0) {
+        // Logic for moving up one directory
+        char *parent_path = strdup(current.directory);
+        char *last_slash = strrchr(parent_path, '/');
+        if (last_slash != NULL) {
+            *last_slash = '\0';
+        }
+        if (strlen(parent_path) == 0) {
+            strcpy(parent_path, "/");
+        }
+        int parent_block = find_block_by_path(parent_path);
+        if (parent_block != -1) {
+            strcpy(current.directory, parent_path);
+            current.directory_index = parent_block;
+        }
+        free(parent_path);
+    } else {
+        char new_path[MAX_STRING_LENGTH * 2];
+        if (name[0] == '/') {
+            strcpy(new_path, name);
+        } else {
+            snprintf(new_path, sizeof(new_path), "%s/%s", current.directory, name);
+        }
+        int new_block = find_block_by_path(new_path);
+        if (new_block != -1) {
+            strcpy(current.directory, new_path);
+            current.directory_index = new_block;
+        } else {
+            if (!debug) printf("%s: %s: No such file or directory\n", "chdir", name);
+            return 0;
+        }
+    }
+    
+    if (debug) printf("\t[%s] Current Directory is now [%s]\n", __func__, current.directory);
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
 
+//make directory
 int do_mkdir(char *name, char *size)
 {
-	(void)*size;
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}	
+    (void)*size;
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return 0;
+    }    
 
-	//If it returns 0, there is a subitem with that name already
-	if ( get_directory_subitem(current.directory, -1, name) == 0  ) {
-			if ( debug ) printf( "\t\t\t[%s] Cannot Make Directory [%s]\n", __func__, name );
-			if (!debug ) printf( "%s: cannot create directory '%s': Folder exists\n", "mkdir", name );
-			return 0;
-		}
+    char new_path[MAX_STRING_LENGTH * 2];
+	if (name[0] == '/') {
+            strcpy(new_path, name);
+        } else {
+            snprintf(new_path, sizeof(new_path), "%s/%s", current.directory, name);
+        }
 
-	//Call add directory
-	if ( debug ) printf("\t[%s] Creating Directory: [%s]\n", __func__, name );
-	if ( add_directory( name ) != 0 ) {
-		if (!debug ) printf("%s: missing operand\n", "mkdir");
-		return 0;
-	}
-	
-	//Edit the current directory to add our new directory to the current directory's "subdirectory" member. 
-	//NULL ==> for just editing the subdirectory
-	edit_directory( current.directory, name, NULL, false, true );
-		if ( debug ) printf("\t[%s] Updating Parents Subitem content\n", __func__ );
-		
-	if ( debug ) printf("\t[%s] Directory Created Successfully\n", __func__ );
-	if( debug ) print_directory(name);
-	
-  	return 0;
+    if (find_block_by_path(new_path) != -1) {
+        if (debug) printf("\t\t\t[%s] Cannot Make Directory [%s]\n", __func__, name);
+        if (!debug) printf("%s: cannot create directory '%s': Folder exists\n", "mkdir", name);
+        return 0;
+    }
+
+    if (debug) printf("\t[%s] Creating Directory: [%s]\n", __func__, new_path);
+    if (add_directory(new_path) != 0) {
+        if (!debug) printf("%s: missing operand\n", "mkdir");
+        return 0;
+    }
+    
+    // Update parent directory
+    edit_directory(current.directory, name, NULL, false, true);
+    if (debug) printf("\t[%s] Updating Parents Subitem content\n", __func__);
+    
+    if (debug) printf("\t[%s] Directory Created Successfully\n", __func__);
+    if (debug) print_directory(new_path);
+    
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
 
+//remove directory
 int do_rmdir(char *name, char *size)
 {
-	(void)*size;
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
-		
-	if ( strcmp(name,"") == 0 ) {
-		if ( debug ) printf("\t[%s] Invalid Command\n", __func__ );
-		if (!debug ) printf("%s: missing operand\n", "rmdir");
-		return 0;
-	}
-	
-	if( (strcmp(name, ".") == 0) || (strcmp(name, "..") == 0) ) {
-		if ( debug ) printf("\t[%s] Invalid command [%s] Will not remove directory\n", __func__, name);
-		if (!debug ) printf( "%s: %s: No such file or directory\n", "rmdir", name );
-		return 0;
-	}
-	
-	//Check to make sure it is a subdirectory that is to be changed
-	//If name is not in the current directory then returns -1, else return 0
-	if ( strcmp(get_directory_subitem(current.directory, -1, name), "-1") == 0 ) {
-		if ( debug ) printf( "\t[%s] Cannot Remove Directory [%s]\n", __func__, name );
-		if (!debug ) printf( "%s: %s: No such file or directory\n", "rmdir", name );
-		return 0;
-	}
-	
-	//Remove directory from the parent's subitems.
-	dir_type *folder = malloc ( BLOCK_SIZE );
-	int block_index = find_block(name, true);
-	memcpy( folder, disk + block_index*BLOCK_SIZE, BLOCK_SIZE );
-
-	dir_type *top_folder = malloc ( BLOCK_SIZE );
-
-	//The top_level is created based off the folder 
-	int top_block_index = find_block(folder->top_level, true);
-	memcpy( disk + block_index*BLOCK_SIZE, folder, BLOCK_SIZE );
-	memcpy( top_folder, disk + top_block_index*BLOCK_SIZE, BLOCK_SIZE );
-
-	char subitem_name[MAX_STRING_LENGTH]; // holds the current subitem in the parent directory array
-	const int subcnt = top_folder->subitem_count; // no. of subitems
-	int j;
-	int k=0;
-
-	//iterate through the subitem count
-	for(j = 0; j<subcnt; j++) {
-		strcpy(subitem_name, top_folder->subitem[j]);
-		if (strcmp(subitem_name, name) != 0)
-		{
-			strcpy(top_folder->subitem[k],subitem_name);
-			//printf("------ Subitem [%s] copied ------\n", subitem_name);
-			k++;
-		}
-	}
-	
-	//Remove the directory subitem from the parent
-	strcpy(top_folder->subitem[k], "");
-
-	top_folder->subitem_count--;
-	memcpy( disk + top_block_index*BLOCK_SIZE, top_folder, BLOCK_SIZE );
-	free(top_folder);
-	
-	//Remove the directory with its contents
-	if ( debug ) printf("\t[%s] Removing Directory: [%s]\n", __func__, name );
-	if( remove_directory( name ) == -1 ) {
-		return 0;
-	}
-	
-	if (debug) printf("\t[%s] Directory Removed Successfully\n", __func__);
-	return 0;
+    (void)*size;
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return -1;
+    }
+        
+    if (strcmp(name,"") == 0) {
+        if (debug) printf("\t[%s] Invalid Command\n", __func__);
+        if (!debug) printf("%s: missing operand\n", "rmdir");
+        return -1;
+    }
+    
+    if ((strcmp(name, ".") == 0) || (strcmp(name, "..") == 0)) {
+        if (debug) printf("\t[%s] Invalid command [%s] Will not remove directory\n", __func__, name);
+        if (!debug) printf("%s: %s: No such file or directory\n", "rmdir", name);
+        return -1;
+    }
+    
+    char path[MAX_STRING_LENGTH * 2];
+    snprintf(path, sizeof(path), "%s/%s", current.directory, name);
+    
+    int block_index = find_block_by_path(path);
+    if (block_index == -1) {
+        if (debug) printf("\t[%s] Cannot Remove Directory [%s]\n", __func__, name);
+        if (!debug) printf("%s: %s: No such file or directory\n", "rmdir", name);
+        return -1;
+    }
+    
+    if (debug) printf("\t[%s] Removing Directory: [%s]\n", __func__, path);
+    if (remove_directory(path) == -1) {
+        return 0;
+    }
+    
+    // Update parent directory
+    edit_directory(current.directory, name, NULL, true, true);
+    
+    if (debug) printf("\t[%s] Directory Removed Successfully\n", __func__);
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
 
-int do_mvdir(char *name, char *size) //"size" is actually the new name
+//rename directory
+int do_mvdir(char *name, char *size) // "size" is actually the new name
 {
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return 0;
+    }
 
-	//Rename the directory
-	if ( debug ) printf("\t[%s] Renaming Directory: [%s]\n", __func__, name );
-	//if the directory "name" is not found, return -1
-	if( edit_directory( name, "", size, true, true ) == -1 ) {
-		if (!debug ) printf( "%s: cannot rename file or directory '%s'\n", "mvdir", name );
-		return 0;
-	}
-	
-	//else the directory is renamed
-	if (debug) printf( "\t[%s] Directory Renamed Successfully: [%s]\n", __func__, size );
-	if (debug) print_directory(size); 
-	return 0;
+    char old_path[MAX_STRING_LENGTH * 2];
+    char new_path[MAX_STRING_LENGTH * 2];
+    snprintf(old_path, sizeof(old_path), "%s/%s", current.directory, name);
+    snprintf(new_path, sizeof(new_path), "%s/%s", current.directory, size);
+
+    if (debug) printf("\t[%s] Renaming Directory: [%s] to [%s]\n", __func__, old_path, new_path);
+    
+    if (find_block_by_path(old_path) == -1) {
+        if (!debug) printf("%s: cannot rename file or directory '%s'\n", "mvdir", name);
+        return -1;
+    }
+
+    if (edit_directory(old_path, "", size, true, true) == -1) {
+        if (!debug) printf("%s: cannot rename file or directory '%s'\n", "mvdir", name);
+        return -1;
+    }
+    
+    if (debug) printf("\t[%s] Directory Renamed Successfully: [%s]\n", __func__, new_path);
+    if (debug) print_directory(new_path);
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
 
+//make file
 int do_mkfil(char *name, char *size)
 {
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
-	
-	if ( debug ) printf("\t[%s] Creating File: [%s], with Size: [%s]\n", __func__, name, size );
-	
-	//If it returns 0, there is a subitem with that name already
-	if ( get_directory_subitem(current.directory, -1, name) == 0  ) {
-			if ( debug ) printf( "\t\t\t[%s] Cannot make file [%s], a file or directory [%s] already exists\n", __func__, name, name );
-			if (!debug ) printf( "%s: cannot create file '%s': File exists\n", "mkfil", name );
-			return 0;
-		}
-	
-	if ( add_file ( name, atoi(size)) != 0 )
-		return 0;
-	
-	//Edit the current directory to add our new file to the current directory's "subdirectory" member.
-  	edit_directory( current.directory, name, NULL, false, false);
-  		if ( debug ) printf("\t[%s] Updating Parents Subitem content\n", __func__ );
-  	
-  	if ( debug ) print_file(name);
-  	return 0;
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return 0;
+    }
+    
+    char path[MAX_STRING_LENGTH * 2];
+    snprintf(path, sizeof(path), "%s/%s", current.directory, name);
+
+    if (debug) printf("\t[%s] Creating File: [%s], with Size: [%s]\n", __func__, path, size);
+    
+    if (find_block_by_path(path) != -1) {
+        if (debug) printf("\t\t\t[%s] Cannot make file [%s], a file or directory [%s] already exists\n", __func__, name, name);
+        if (!debug) printf("%s: cannot create file '%s': File exists\n", "mkfil", name);
+        return -1;
+    }
+    
+    if (add_file(path, atoi(size)) != 0)
+        return 0;
+    
+    // Edit the current directory to add our new file to the current directory's "subdirectory" member.
+    edit_directory(current.directory, name, NULL, false, false);
+    if (debug) printf("\t[%s] Updating Parents Subitem content\n", __func__);
+    
+    if (debug) print_file(path);
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
@@ -465,24 +481,26 @@ int do_mkfil(char *name, char *size)
 // Remove a file
 int do_rmfil(char *name, char *size)
 {
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
-	
-	(void)*size;
-	if ( debug ) printf("\t[%s] Removing File: [%s]\n", __func__, name);
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return -1;
+    }
+    
+    (void)*size;
+    char path[MAX_STRING_LENGTH * 2];
+    snprintf(path, sizeof(path), "%s/%s", current.directory, name);
 
-		//If the file to be removed actually exists in current directory, remove it
-	if ( get_directory_subitem(current.directory, -1, name) == 0  ) {
-			remove_file(name);
-			return 0;
-		}
-	else{ // If it doesn't exist, print error and return 0
-		if ( debug ) printf( "\t\t\t[%s] Cannot remove file [%s], it does not exist in this directory\n", __func__, name );
-		if (!debug ) printf( "%s: %s: No such file or directory\n", "rmfil", name );
-		return 0;
-	}
+    if (debug) printf("\t[%s] Removing File: [%s]\n", __func__, path);
+
+    if (find_block_by_path(path) != -1) {
+        remove_file(path);
+        return 0;
+    }
+    else {
+        if (debug) printf("\t\t\t[%s] Cannot remove file [%s], it does not exist in this directory\n", __func__, name);
+        if (!debug) printf("%s: %s: No such file or directory\n", "rmfil", name);
+        return -1;
+    }
 }
 
 /*--------------------------------------------------------------------------------*/
@@ -490,26 +508,30 @@ int do_rmfil(char *name, char *size)
 // Rename a file
 int do_mvfil(char *name, char *size)
 {
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
-	
-	if ( debug ) printf("\t[%s] Renaming File: [%s], to: [%s]\n", __func__, name, size );
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return 0;
+    }
+    
+    char old_path[MAX_STRING_LENGTH * 2];
+    char new_path[MAX_STRING_LENGTH * 2];
+    snprintf(old_path, sizeof(old_path), "%s/%s", current.directory, name);
+    snprintf(new_path, sizeof(new_path), "%s/%s", current.directory, size);
 
-	//If it returns 0, there is a subitem with that name already
-	if ( get_directory_subitem(current.directory, -1, size) == 0  ) {
-			if ( debug ) printf( "\t\t\t[%s] Cannot rename file [%s], a file or directory [%s] already exists\n", __func__, name, size );
-			if (!debug ) printf( "%s: cannot rename file or directory '%s'\n", "mvfil", name );
-			return 0;
-		}
+    if (debug) printf("\t[%s] Renaming File: [%s], to: [%s]\n", __func__, old_path, new_path);
 
-	int er = edit_file( name, 0, size);
-	
-	if (er == -1) return -1;
-	if (debug) print_file(size);
+    if (find_block_by_path(new_path) != -1) {
+        if (debug) printf("\t\t\t[%s] Cannot rename file [%s], a file or directory [%s] already exists\n", __func__, name, size);
+        if (!debug) printf("%s: cannot rename file or directory '%s'\n", "mvfil", name);
+        return -1;
+    }
 
-	return 0;
+    int er = edit_file(old_path, 0, size);
+    
+    if (er == -1) return -1;
+    if (debug) print_file(new_path);
+
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
@@ -517,55 +539,59 @@ int do_mvfil(char *name, char *size)
 // Resize a file -- addon to be implemented
 int do_szfil(char *name, char *size)
 {
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
-	
-	if ( debug ) printf("\t[%s] Resizing File: [%s], to: [%s]\n", __func__, name, size );
-	//remove file; make new file with updated size
-	if (remove_file(name) != -1)  do_mkfil(name, size);
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return -1;
+    }
+    
+    char path[MAX_STRING_LENGTH * 2];
+    snprintf(path, sizeof(path), "%s/%s", current.directory, name);
 
-	else {
-		if ( debug ) printf("\t[%s] File: [%s] does not exist. Cannot resize.\n", __func__, name);
-		if (!debug ) printf( "%s: cannot resize '%s': No such file or directory\n", "szfil", name );
-	}
+    if (debug) printf("\t[%s] Resizing File: [%s], to: [%s]\n", __func__, path, size);
+    
+    if (find_block_by_path(path) != -1) {
+        remove_file(path);
+        do_mkfil(name, size);
+    }
+    else {
+        if (debug) printf("\t[%s] File: [%s] does not exist. Cannot resize.\n", __func__, name);
+        if (!debug) printf("%s: cannot resize '%s': No such file or directory\n", "szfil", name);
+		return -1;
+    }
 
-	return 0;
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
 
-//Function to list all files in te directory.
 struct file_data* do_ls(const char *path) {
-    // Get the current directory
-    dir_type *current_dir = malloc(BLOCK_SIZE);
-    if (current_dir == NULL) {
+    // Find the directory corresponding to the given path
+    dir_type *target_dir = malloc(BLOCK_SIZE);
+    if (target_dir == NULL) {
         return NULL;
     }
 
-    int block_index = find_block(current.directory, true);
+    int block_index = find_block_by_path(path);
     if (block_index == -1) {
-        free(current_dir);
+        free(target_dir);
         return NULL;
     }
 
-    memcpy(current_dir, disk + block_index*BLOCK_SIZE, BLOCK_SIZE);
+    memcpy(target_dir, disk + block_index*BLOCK_SIZE, BLOCK_SIZE);
 
     struct file_data *head = NULL;
     struct file_data *tail = NULL;
 
-    for (int i = 0; i < current_dir->subitem_count; i++) {
+    for (int i = 0; i < target_dir->subitem_count; i++) {
         struct file_data *new_file = malloc(sizeof(struct file_data));
         if (new_file == NULL) {
             // Handle memory allocation failure
             // You should also free previously allocated nodes here
-            free(current_dir);
+            free(target_dir);
             return NULL;
         }
-
-        new_file->name = strdup(current_dir->subitem[i]);
-        new_file->is_directory = current_dir->subitem_type[i];
+        new_file->name = strdup(target_dir->subitem[i]);
+        new_file->is_directory = target_dir->subitem_type[i];
         new_file->next = NULL;
 
         if (head == NULL) {
@@ -577,7 +603,7 @@ struct file_data* do_ls(const char *path) {
         }
     }
 
-    free(current_dir);
+    free(target_dir);
     return head;
 }
 

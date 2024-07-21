@@ -1,6 +1,7 @@
 #include <gtk/gtk.h>
 #include <string.h>
 #include "simulatedFileSystem.h"
+#include <time.h>
 
 GtkWidget *window;
 GtkWidget *grid;
@@ -28,20 +29,47 @@ enum {
     NUM_COLS
 };
 
-static void append_to_output(const char *message) {
-    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(output_view));
-    GtkTextIter end;
-    gtk_text_buffer_get_end_iter(buffer, &end);
-    gtk_text_buffer_insert(buffer, &end, message, -1);
-    gtk_text_buffer_insert(buffer, &end, "\n", -1);
+// static void append_to_output(const char *message) {
+//     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(output_view));
+//     GtkTextIter end;
+//     gtk_text_buffer_get_end_iter(buffer, &end);
+//     gtk_text_buffer_insert(buffer, &end, message, -1);
+//     gtk_text_buffer_insert(buffer, &end, "\n", -1);
+// }
+
+static FILE *log_file = NULL;
+
+static void log_action(const char *message) {
+    if (!log_file) {
+        time_t t = time(NULL);
+        struct tm *tm = localtime(&t);
+        char filename[64];
+        strftime(filename, sizeof(filename), "file_system_gui_%Y%m%d_%H%M%S.log", tm);
+        log_file = fopen(filename, "w");
+        if (!log_file) {
+            fprintf(stderr, "Error opening log file\n");
+            return;
+        }
+    }
+
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    char timestamp[64];
+    strftime(timestamp, sizeof(timestamp), "[%Y-%m-%d %H:%M:%S]", tm);
+
+    fprintf(log_file, "%s %s\n", timestamp, message);
+    fflush(log_file);
+}
+
+static void update_button_sensitivity() {
+    gboolean has_selection = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(icon_view)) != NULL;
+    gtk_widget_set_sensitive(GTK_WIDGET(delete_button), has_selection);
+    gtk_widget_set_sensitive(GTK_WIDGET(rename_button), has_selection);
 }
 
 static void refresh_view() {
     gtk_list_store_clear(store);
 
-    // Retrieve the list of files and directories in the current_path
-    // Use your file system functions here to populate the GTK list store
-    // This is a placeholder implementation
     struct file_data *files = do_ls(current_path);
     struct file_data *current_file = files;
 
@@ -60,11 +88,14 @@ static void refresh_view() {
     }
 
     gtk_label_set_text(GTK_LABEL(path_bar), current_path);
-    append_to_output("Directory contents refreshed");
+    log_action("Directory contents refreshed");
 
     g_object_unref(folder_icon);
     g_object_unref(file_icon);
+
+    update_button_sensitivity();
 }
+
 
 static void item_activated(GtkIconView *icon_view, GtkTreePath *tree_path, gpointer user_data) {
     GtkTreeIter iter;
@@ -91,7 +122,6 @@ static void item_activated(GtkIconView *icon_view, GtkTreePath *tree_path, gpoin
 }
 
 static void new_folder_clicked(GtkToolButton *button, gpointer user_data) {
-    // Show a dialog to get the new folder name
     GtkWidget *dialog = gtk_dialog_new_with_buttons("New Folder", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
                                                     "Cancel", GTK_RESPONSE_CANCEL, 
                                                     "Create", GTK_RESPONSE_OK, 
@@ -106,11 +136,12 @@ static void new_folder_clicked(GtkToolButton *button, gpointer user_data) {
     if (response == GTK_RESPONSE_OK) {
         const gchar *folder_name = gtk_entry_get_text(GTK_ENTRY(entry));
         if (g_strcmp0(folder_name, "") != 0) {
-            // Call your mkdir function here
-            if (do_mkdir((char *)folder_name, "") == 0) {
-                append_to_output("Folder created successfully");
+            char full_path[512];
+            snprintf(full_path, sizeof(full_path), "%s%s", current_path, folder_name);
+            if (do_mkdir((char *)full_path, "") == 0) {
+                log_action("Folder created successfully");
             } else {
-                append_to_output("Error creating folder");
+                log_action("Error creating folder");
             }
             refresh_view();
         }
@@ -119,7 +150,6 @@ static void new_folder_clicked(GtkToolButton *button, gpointer user_data) {
 }
 
 static void new_file_clicked(GtkToolButton *button, gpointer user_data) {
-    // Show a dialog to get the new file name
     GtkWidget *dialog = gtk_dialog_new_with_buttons("New File", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
                                                     "Cancel", GTK_RESPONSE_CANCEL, 
                                                     "Create", GTK_RESPONSE_OK, 
@@ -134,11 +164,12 @@ static void new_file_clicked(GtkToolButton *button, gpointer user_data) {
     if (response == GTK_RESPONSE_OK) {
         const gchar *file_name = gtk_entry_get_text(GTK_ENTRY(entry));
         if (g_strcmp0(file_name, "") != 0) {
-            // Call your mkfil function here
-            if (do_mkfil((char *)file_name, "0") == 0) {
-                append_to_output("File created successfully");
+            char full_path[512];
+            snprintf(full_path, sizeof(full_path), "%s%s", current_path, file_name);
+            if (do_mkfil((char *)full_path, "0") == 0) {
+                log_action("File created successfully");
             } else {
-                append_to_output("Error creating file");
+                log_action("Error creating file");
             }
             refresh_view();
         }
@@ -159,20 +190,17 @@ static void delete_clicked(GtkToolButton *button, gpointer user_data) {
                            COL_IS_DIRECTORY, &is_directory, 
                            -1);
         
+        int result;
         if (is_directory) {
-            // Call your rmdir function here
-            if (do_rmdir(name, "") == 0) {
-                append_to_output("Folder deleted successfully");
-            } else {
-                append_to_output("Error deleting folder");
-            }
+            result = do_rmdir(name, "");
         } else {
-            // Call your rmfil function here
-            if (do_rmfil(name, "") == 0) {
-                append_to_output("File deleted successfully");
-            } else {
-                append_to_output("Error deleting file");
-            }
+            result = do_rmfil(name, "");
+        }
+        
+        if (result == 0) {
+            log_action("Item deleted successfully");
+        } else {
+            log_action("Error deleting item");
         }
         
         g_free(name);
@@ -194,7 +222,6 @@ static void rename_clicked(GtkToolButton *button, gpointer user_data) {
                            COL_IS_DIRECTORY, &is_directory, 
                            -1);
 
-        // Show a dialog to get the new name
         GtkWidget *dialog = gtk_dialog_new_with_buttons("Rename", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
                                                         "Cancel", GTK_RESPONSE_CANCEL, 
                                                         "Rename", GTK_RESPONSE_OK, 
@@ -209,19 +236,17 @@ static void rename_clicked(GtkToolButton *button, gpointer user_data) {
         if (response == GTK_RESPONSE_OK) {
             const gchar *new_name = gtk_entry_get_text(GTK_ENTRY(entry));
             if (g_strcmp0(new_name, "") != 0 && g_strcmp0(new_name, name) != 0) {
-                // Call your rename function here
+                int result;
                 if (is_directory) {
-                    if (do_mvdir(name, (char *)new_name) == 0) {
-                        append_to_output("Folder renamed successfully");
-                    } else {
-                        append_to_output("Error renaming folder");
-                    }
+                    result = do_mvdir(name, (char *)new_name);
                 } else {
-                    if (do_mvfil(name, (char *)new_name) == 0) {
-                        append_to_output("File renamed successfully");
-                    } else {
-                        append_to_output("Error renaming file");
-                    }
+                    result = do_mvfil(name, (char *)new_name);
+                }
+
+                if (result == 0) {
+                    log_action("Item renamed successfully");
+                } else {
+                    log_action("Error renaming item");
                 }
                 refresh_view();
             }
@@ -240,19 +265,17 @@ static void back_clicked(GtkToolButton *button, gpointer user_data) {
         g_free(prev_directory);
         refresh_view();
     } else {
-        append_to_output("No previous directory in stack");
+        log_action("No previous directory in stack");
     }
 }
 
 static void up_clicked(GtkToolButton *button, gpointer user_data) {
-    gchar *last_slash = g_strrstr(current_path, "/");
-    if (last_slash && last_slash != current_path) {
-        *last_slash = '\0';
-        last_slash = g_strrstr(current_path, "/");
-        if (last_slash) {
-            *(last_slash + 1) = '\0';
+    if (strcmp(current_path, "/") != 0) {
+        char *last_slash = strrchr(current_path, '/');
+        if (last_slash != current_path) {
+            *last_slash = '\0';
         } else {
-            strcpy(current_path, "/");
+            *(last_slash + 1) = '\0';
         }
         refresh_view();
     }
@@ -308,6 +331,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_icon_view_set_pixbuf_column(GTK_ICON_VIEW(icon_view), COL_ICON);
     gtk_container_add(GTK_CONTAINER(scrolled_window), icon_view);
 
+    g_signal_connect(icon_view, "selection-changed", G_CALLBACK(update_button_sensitivity), NULL);
     g_signal_connect(icon_view, "item-activated", G_CALLBACK(item_activated), NULL);
 
     GtkWidget *output_scrolled_window = gtk_scrolled_window_new(NULL, NULL);
@@ -327,6 +351,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
 int main(int argc, char **argv) {
     // Initialize the file system
     do_root("", "");
+    log_action("File System GUI started");
 
     GtkApplication *app;
     int status;
@@ -335,6 +360,9 @@ int main(int argc, char **argv) {
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
     status = g_application_run(G_APPLICATION(app), argc, argv);
     g_object_unref(app);
-
+    
+    if (log_file) {
+        fclose(log_file);
+    }
     return status;
 }

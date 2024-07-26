@@ -538,36 +538,47 @@ int do_szfil(char *name, char *size)
 
 //Function to list all files in te directory.
 struct file_data* do_ls(const char *path) {
-    // Get the current directory
-    dir_type *current_dir = malloc(BLOCK_SIZE);
-    if (current_dir == NULL) {
+    printf("do_ls called with path: %s\n", path);
+    
+    dir_type *target_dir = malloc(BLOCK_SIZE);
+    if (target_dir == NULL) {
         return NULL;
     }
-
-    int block_index = find_block(current.directory, true);
-    if (block_index == -1) {
-        free(current_dir);
-        return NULL;
+    
+    // Split the path into components
+    char *path_copy = strdup(path);
+    char *component = strtok(path_copy, "/");
+    int block_index = 1; // Start from root
+    
+    while (component != NULL) {
+        block_index = find_block(component, true);
+        if (block_index == -1) {
+            free(target_dir);
+            free(path_copy);
+            return NULL;
+        }
+        component = strtok(NULL, "/");
     }
-
-    memcpy(current_dir, disk + block_index*BLOCK_SIZE, BLOCK_SIZE);
-
+    
+    free(path_copy);
+    
+    memcpy(target_dir, disk + block_index*BLOCK_SIZE, BLOCK_SIZE);
+    
     struct file_data *head = NULL;
     struct file_data *tail = NULL;
-
-    for (int i = 0; i < current_dir->subitem_count; i++) {
+    
+    for (int i = 0; i < target_dir->subitem_count; i++) {
         struct file_data *new_file = malloc(sizeof(struct file_data));
         if (new_file == NULL) {
             // Handle memory allocation failure
             // You should also free previously allocated nodes here
-            free(current_dir);
+            free(target_dir);
             return NULL;
         }
-
-        new_file->name = strdup(current_dir->subitem[i]);
-        new_file->is_directory = current_dir->subitem_type[i];
+        new_file->name = strdup(target_dir->subitem[i]);
+        new_file->is_directory = target_dir->subitem_type[i];
         new_file->next = NULL;
-
+        
         if (head == NULL) {
             head = new_file;
             tail = new_file;
@@ -576,8 +587,8 @@ struct file_data* do_ls(const char *path) {
             tail = new_file;
         }
     }
-
-    free(current_dir);
+    
+    free(target_dir);
     return head;
 }
 

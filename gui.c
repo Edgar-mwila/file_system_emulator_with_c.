@@ -1,5 +1,6 @@
 #include <gtk/gtk.h>
 #include <string.h>
+#include <glib.h>
 #include "simulatedFileSystem.h"
 
 GtkWidget *window;
@@ -13,13 +14,13 @@ GtkToolItem *new_folder_button;
 GtkToolItem *new_file_button;
 GtkToolItem *delete_button;
 GtkToolItem *rename_button;
-GtkToolItem *back_button;
-GtkToolItem *up_button;
+GtkWidget *back_button;
+GtkWidget *up_button;
 GtkWidget *path_bar;
 GtkWidget *output_view;
 
-char current_path[256] = "/";
-GList *directory_stack = NULL; // Stack to maintain directory history
+GList *directory_stack = NULL;
+char current_path[256] = "root";
 
 enum {
     COL_NAME,
@@ -28,20 +29,26 @@ enum {
     NUM_COLS
 };
 
-static void append_to_output(const char *message) {
-    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(output_view));
-    GtkTextIter end;
-    gtk_text_buffer_get_end_iter(buffer, &end);
-    gtk_text_buffer_insert(buffer, &end, message, -1);
-    gtk_text_buffer_insert(buffer, &end, "\n", -1);
+static void log_event(const char *message) {
+    time_t now;
+    struct tm *timeinfo;
+    char timestamp[20];
+    
+    time(&now);
+    timeinfo = localtime(&now);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", timeinfo);
+    
+    FILE *log_file = fopen("file_system_gui.log", "a");
+    if (log_file) {
+        fprintf(log_file, "[%s] %s\n", timestamp, message);
+        fclose(log_file);
+    }
 }
 
 static void refresh_view() {
     gtk_list_store_clear(store);
 
-    // Retrieve the list of files and directories in the current_path
-    // Use your file system functions here to populate the GTK list store
-    // This is a placeholder implementation
+    // Use the current_path when calling do_ls
     struct file_data *files = do_ls(current_path);
     struct file_data *current_file = files;
 
@@ -60,10 +67,18 @@ static void refresh_view() {
     }
 
     gtk_label_set_text(GTK_LABEL(path_bar), current_path);
-    append_to_output("Directory contents refreshed");
+    log_event("Directory contents refreshed");
 
     g_object_unref(folder_icon);
     g_object_unref(file_icon);
+
+    // Free the file_data structure
+    while (files != NULL) {
+        struct file_data *temp = files;
+        files = files->next;
+        free(temp->name);
+        free(temp);
+    }
 }
 
 static void item_activated(GtkIconView *icon_view, GtkTreePath *tree_path, gpointer user_data) {
@@ -78,13 +93,25 @@ static void item_activated(GtkIconView *icon_view, GtkTreePath *tree_path, gpoin
                        -1);
     
     if (is_directory) {
-        // Push the current path onto the stack
-        directory_stack = g_list_prepend(directory_stack, g_strdup(current_path));
+        gchar *new_path = g_build_filename(current_path, name, NULL);
         
-        // Change directory
-        strcat(current_path, name);
-        strcat(current_path, "/");
-        refresh_view();
+        if (new_path) {
+            if (strlen(new_path) < sizeof(current_path)) {
+                if (do_chdir(name, "") == 1) {
+                    directory_stack = g_list_prepend(directory_stack, g_strdup(current_path));
+                    strncpy(current_path, new_path, sizeof(current_path) - 1);
+                    current_path[sizeof(current_path) - 1] = '\0';
+                    refresh_view();
+                } else {
+                    log_event("Error changing directory");
+                }
+            } else {
+                log_event("Path too long");
+            }
+            g_free(new_path);
+        } else {
+            log_event("Error creating new path");
+        }
     }
     
     g_free(name);
@@ -108,11 +135,11 @@ static void new_folder_clicked(GtkToolButton *button, gpointer user_data) {
         if (g_strcmp0(folder_name, "") != 0) {
             // Call your mkdir function here
             if (do_mkdir((char *)folder_name, "") == 0) {
-                append_to_output("Folder created successfully");
+                log_event("Folder created successfully");
+                refresh_view();
             } else {
-                append_to_output("Error creating folder");
+                log_event("Error creating folder");
             }
-            refresh_view();
         }
     }
     gtk_widget_destroy(dialog);
@@ -136,11 +163,11 @@ static void new_file_clicked(GtkToolButton *button, gpointer user_data) {
         if (g_strcmp0(file_name, "") != 0) {
             // Call your mkfil function here
             if (do_mkfil((char *)file_name, "0") == 0) {
-                append_to_output("File created successfully");
+                log_event("File created successfully");
+                refresh_view();
             } else {
-                append_to_output("Error creating file");
+                log_event("Error creating file");
             }
-            refresh_view();
         }
     }
     gtk_widget_destroy(dialog);
@@ -162,16 +189,16 @@ static void delete_clicked(GtkToolButton *button, gpointer user_data) {
         if (is_directory) {
             // Call your rmdir function here
             if (do_rmdir(name, "") == 0) {
-                append_to_output("Folder deleted successfully");
+                log_event("Folder deleted successfully");
             } else {
-                append_to_output("Error deleting folder");
+                log_event("Error deleting folder");
             }
         } else {
             // Call your rmfil function here
             if (do_rmfil(name, "") == 0) {
-                append_to_output("File deleted successfully");
+                log_event("File deleted successfully");
             } else {
-                append_to_output("Error deleting file");
+                log_event("Error deleting file");
             }
         }
         
@@ -212,15 +239,15 @@ static void rename_clicked(GtkToolButton *button, gpointer user_data) {
                 // Call your rename function here
                 if (is_directory) {
                     if (do_mvdir(name, (char *)new_name) == 0) {
-                        append_to_output("Folder renamed successfully");
+                        log_event("Folder renamed successfully");
                     } else {
-                        append_to_output("Error renaming folder");
+                        log_event("Error renaming folder");
                     }
                 } else {
                     if (do_mvfil(name, (char *)new_name) == 0) {
-                        append_to_output("File renamed successfully");
+                        log_event("File renamed successfully");
                     } else {
-                        append_to_output("Error renaming file");
+                        log_event("Error renaming file");
                     }
                 }
                 refresh_view();
@@ -234,28 +261,53 @@ static void rename_clicked(GtkToolButton *button, gpointer user_data) {
 
 static void back_clicked(GtkToolButton *button, gpointer user_data) {
     if (directory_stack) {
-        gchar *prev_directory = (gchar *)directory_stack->data;
-        directory_stack = g_list_remove(directory_stack, prev_directory);
-        strcpy(current_path, prev_directory);
-        g_free(prev_directory);
-        refresh_view();
+        char parent_path[256];
+        strncpy(parent_path, current_path, sizeof(parent_path));
+        char *last_slash = strrchr(parent_path, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+        }
+        if (do_chdir(parent_path, "") == 0) {
+            gchar *prev_directory = (gchar *)directory_stack->data;
+            directory_stack = g_list_remove(directory_stack, prev_directory);
+            strncpy(current_path, prev_directory, sizeof(current_path) - 1);
+            current_path[sizeof(current_path) - 1] = '\0';
+            g_free(prev_directory);
+            refresh_view();
+        } else {
+            log_event("Error changing to parent directory");
+        }
     } else {
-        append_to_output("No previous directory in stack");
+        log_event("No previous directory in stack");
     }
 }
 
 static void up_clicked(GtkToolButton *button, gpointer user_data) {
-    gchar *last_slash = g_strrstr(current_path, "/");
-    if (last_slash && last_slash != current_path) {
+    char parent_path[256];
+    strncpy(parent_path, current_path, sizeof(parent_path));
+    char *last_slash = strrchr(parent_path, '/');
+    if (last_slash && last_slash != parent_path) {
         *last_slash = '\0';
-        last_slash = g_strrstr(current_path, "/");
-        if (last_slash) {
-            *(last_slash + 1) = '\0';
+        if (do_chdir(parent_path, "") == 0) {
+            strncpy(current_path, parent_path, sizeof(current_path) - 1);
+            current_path[sizeof(current_path) - 1] = '\0';
+            refresh_view();
         } else {
-            strcpy(current_path, "/");
+            log_event("Error changing to parent directory");
         }
-        refresh_view();
+    } else {
+        log_event("Already at root directory");
     }
+}
+
+static void on_selection_changed(GtkIconView *icon_view, gpointer user_data) {
+    GList *selected_items = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(icon_view));
+    gboolean has_selection = (selected_items != NULL);
+    
+    gtk_widget_set_sensitive(GTK_WIDGET(delete_button), has_selection);
+    gtk_widget_set_sensitive(GTK_WIDGET(rename_button), has_selection);
+    
+    g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
 }
 
 static void activate(GtkApplication *app, gpointer user_data) {
@@ -278,23 +330,28 @@ static void activate(GtkApplication *app, gpointer user_data) {
     g_signal_connect(new_file_button, "clicked", G_CALLBACK(new_file_clicked), NULL);
 
     delete_button = gtk_tool_button_new(NULL, "Delete");
+    gtk_widget_set_sensitive(GTK_WIDGET(delete_button), FALSE);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), delete_button, -1);
     g_signal_connect(delete_button, "clicked", G_CALLBACK(delete_clicked), NULL);
 
     rename_button = gtk_tool_button_new(NULL, "Rename");
+    gtk_widget_set_sensitive(GTK_WIDGET(rename_button), FALSE);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), rename_button, -1);
     g_signal_connect(rename_button, "clicked", G_CALLBACK(rename_clicked), NULL);
 
-    back_button = gtk_tool_button_new(NULL, "Back");
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), back_button, -1);
-    g_signal_connect(back_button, "clicked", G_CALLBACK(back_clicked), NULL);
+    GtkWidget *path_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_grid_attach(GTK_GRID(grid), path_box, 0, 1, 2, 1);
 
-    up_button = gtk_tool_button_new(NULL, "Up");
-    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), up_button, -1);
-    g_signal_connect(up_button, "clicked", G_CALLBACK(up_clicked), NULL);
+    back_button = gtk_button_new_with_label("Back");
+    g_signal_connect(back_button, "clicked", G_CALLBACK(back_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(path_box), back_button, FALSE, FALSE, 0);
 
     path_bar = gtk_label_new(current_path);
-    gtk_grid_attach(GTK_GRID(grid), path_bar, 0, 1, 2, 1);
+    gtk_box_pack_start(GTK_BOX(path_box), path_bar, TRUE, TRUE, 0);
+
+    up_button = gtk_button_new_with_label("Up");
+    g_signal_connect(up_button, "clicked", G_CALLBACK(up_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(path_box), up_button, FALSE, FALSE, 0);
 
     scrolled_window = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_vexpand(scrolled_window, TRUE);
@@ -307,7 +364,12 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_icon_view_set_text_column(GTK_ICON_VIEW(icon_view), COL_NAME);
     gtk_icon_view_set_pixbuf_column(GTK_ICON_VIEW(icon_view), COL_ICON);
     gtk_container_add(GTK_CONTAINER(scrolled_window), icon_view);
+    gtk_icon_view_set_column_spacing(GTK_ICON_VIEW(icon_view), 10);
+    gtk_icon_view_set_row_spacing(GTK_ICON_VIEW(icon_view), 10);
+    gtk_icon_view_set_item_width(GTK_ICON_VIEW(icon_view), 100);
+    gtk_icon_view_set_columns(GTK_ICON_VIEW(icon_view), -1);
 
+    g_signal_connect(icon_view, "selection-changed", G_CALLBACK(on_selection_changed), NULL);
     g_signal_connect(icon_view, "item-activated", G_CALLBACK(item_activated), NULL);
 
     GtkWidget *output_scrolled_window = gtk_scrolled_window_new(NULL, NULL);

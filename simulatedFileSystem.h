@@ -13,6 +13,7 @@ struct file_data* do_ls(const char *path);
 int do_root(char *name, char *size);
 int do_mkdir(char *name, char *size);
 int do_mkfil(char *name, char *size);
+int do_chdir(char *name, char *size);
 int do_mvdir(char *name, char *size);
 int do_mvfil(char *name, char *size);
 int do_rmdir(char *name, char *size);

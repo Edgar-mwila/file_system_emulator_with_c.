@@ -87,33 +87,12 @@ typedef struct {
 	int parent_index;
 } working_directory;
 
-
-typedef struct dir_type {
-	char name[MAX_STRING_LENGTH];		//Name of file or dir
-	char top_level[MAX_STRING_LENGTH];	//Name of directory one level up(immediate parent)
-	char (*subitem)[MAX_STRING_LENGTH];
-	bool subitem_type[MAX_SUBDIRECTORIES];	//true if directory, false if file
-	int subitem_count;
-	struct dir_type *next;
-} dir_type;
-
-
-typedef struct file_type {
-	char name[MAX_STRING_LENGTH];		//Name of file or dir
-	char top_level[MAX_STRING_LENGTH];	//Name of directory one level up 
-	int data_block_index[MAX_FILE_DATA_BLOCKS];
-	int data_block_count;
-	int size;
-	struct file_type *next;
-} file_type;
-
 typedef struct {
 	bool free[BLOCKS];
 	bool directory[BLOCKS];
 	char (*name)[MAX_STRING_LENGTH];
 } descriptor_block;
 
-char *disk;
 working_directory current;
 bool disk_allocated = false; // makes sure that do_root is first thing being called and only called once
 

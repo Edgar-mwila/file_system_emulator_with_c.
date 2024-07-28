@@ -1,6 +1,7 @@
 #include <gtk/gtk.h>
 #include <string.h>
 #include <glib.h>
+#include <stdbool.h>
 #include "simulatedFileSystem.h"
 
 GtkWidget *window;
@@ -14,6 +15,7 @@ GtkToolItem *new_folder_button;
 GtkToolItem *new_file_button;
 GtkToolItem *delete_button;
 GtkToolItem *rename_button;
+GtkToolItem *details_button;
 GtkWidget *back_button;
 GtkWidget *up_button;
 GtkWidget *path_bar;
@@ -44,6 +46,7 @@ static void log_event(const char *message) {
         fclose(log_file);
     }
 }
+
 
 static void refresh_view() {
     gtk_list_store_clear(store);
@@ -259,6 +262,68 @@ static void rename_clicked(GtkToolButton *button, gpointer user_data) {
     }
 }
 
+static int get_item_details(char *name, gboolean is_directory, char *details, size_t details_size) {
+    int block_index = find_block(name, (bool)is_directory);
+    if (block_index == -1) {
+        return -1;
+    }
+    
+    if (is_directory) {
+        dir_type *dir = (dir_type*)(disk + block_index * BLOCK_SIZE);
+        snprintf(details, details_size,
+                 "Type: Directory\n"
+                 "Name: %s\n"
+                 "Parent: %s\n"
+                 "Number of items: %d",
+                 dir->name, dir->top_level, dir->subitem_count);
+    } else {
+        file_type *file = (file_type*)(disk + block_index * BLOCK_SIZE);
+        snprintf(details, details_size,
+                 "Type: File\n"
+                 "Name: %s\n"
+                 "Parent: %s\n"
+                 "Size: %d bytes\n"
+                 "Number of data blocks: %d",
+                 file->name, file->top_level, file->size, file->data_block_count);
+    }
+    
+    return 0;
+}
+
+static void details_clicked(GtkToolButton *button, gpointer user_data) {
+    GList *selected_items = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(icon_view));
+    if (selected_items) {
+        GtkTreeIter iter;
+        gchar *name;
+        gboolean is_directory;
+        
+        gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 
+                           COL_NAME, &name, 
+                           COL_IS_DIRECTORY, &is_directory, 
+                           -1);
+        
+        // Get item details
+        char details[1024];
+        if (get_item_details(name, is_directory, details, sizeof(details)) == 0) {
+            // Show details in a dialog
+            GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                                       GTK_DIALOG_MODAL,
+                                                       GTK_MESSAGE_INFO,
+                                                       GTK_BUTTONS_OK,
+                                                       "Details for %s:\n\n%s",
+                                                       name, details);
+            gtk_dialog_run(GTK_DIALOG(dialog));
+            gtk_widget_destroy(dialog);
+        } else {
+            log_event("Error getting item details");
+        }
+        
+        g_free(name);
+        g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
+    }
+}
+
 static void back_clicked(GtkToolButton *button, gpointer user_data) {
     if (directory_stack) {
         char parent_path[256];
@@ -306,6 +371,7 @@ static void on_selection_changed(GtkIconView *icon_view, gpointer user_data) {
     
     gtk_widget_set_sensitive(GTK_WIDGET(delete_button), has_selection);
     gtk_widget_set_sensitive(GTK_WIDGET(rename_button), has_selection);
+    gtk_widget_set_sensitive(GTK_WIDGET(details_button), has_selection);
     
     g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
 }
@@ -338,6 +404,11 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_sensitive(GTK_WIDGET(rename_button), FALSE);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), rename_button, -1);
     g_signal_connect(rename_button, "clicked", G_CALLBACK(rename_clicked), NULL);
+
+    details_button = gtk_tool_button_new(NULL, "Details");
+    gtk_widget_set_sensitive(GTK_WIDGET(details_button), FALSE);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), details_button, -1);
+    g_signal_connect(details_button, "clicked", G_CALLBACK(details_clicked), NULL);
 
     GtkWidget *path_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     gtk_grid_attach(GTK_GRID(grid), path_box, 0, 1, 2, 1);

@@ -389,25 +389,115 @@ int do_rmdir(char *name, char *size)
 
 /*--------------------------------------------------------------------------------*/
 
-int do_mvdir(char *name, char *size) //"size" is actually the new name
+int do_mvdir(char *name, char *new_name)
 {
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
+    if (disk_allocated == false) {
+        printf("Error: Disk not allocated\n");
+        return -1;
+    }
+
+    if (name == NULL || new_name == NULL || strlen(name) == 0 || strlen(new_name) == 0) {
+        printf("Error: Invalid directory name\n");
+        return -1;
+    }
+
+    if (strcmp(name, new_name) == 0) {
+        printf("Error: New name is the same as the old name\n");
+        return -1;
+    }
+
+    if (debug) printf("\t[%s] Renaming Directory: [%s] to [%s]\n", __func__, name, new_name);
+
+    // Check if the new name already exists
+    if (find_block(new_name, true) != -1) {
+        printf("Error: A directory with the name '%s' already exists\n", new_name);
+        return -1;
+    }
+
+    // Find the directory to be renamed
+    int block_index = find_block(name, true);
+    if (block_index == -1) {
+        printf("Error: Directory '%s' not found\n", name);
+        return -1;
+    }
+
+    dir_type *dir = (dir_type*)(disk + block_index * BLOCK_SIZE);
+
+    if (debug) printf("\t[%s] Found directory at block %d\n", __func__, block_index);
+
+    // Store the parent directory name
+    char parent_name[MAX_STRING_LENGTH];
+    strncpy(parent_name, dir->top_level, MAX_STRING_LENGTH - 1);
+    parent_name[MAX_STRING_LENGTH - 1] = '\0';
+
+    if (debug) printf("\t[%s] Parent directory: [%s]\n", __func__, parent_name);
+
+    // Rename the directory
+    strncpy(dir->name, new_name, MAX_STRING_LENGTH - 1);
+    dir->name[MAX_STRING_LENGTH - 1] = '\0';
+
+    if (debug) printf("\t[%s] Directory renamed to: [%s]\n", __func__, dir->name);
+
+    // Update the parent directory's subitem list
+    int parent_block_index = find_block(parent_name, true);
+    if (parent_block_index != -1) {
+        dir_type *parent_dir = (dir_type*)(disk + parent_block_index * BLOCK_SIZE);
+        if (debug) printf("\t[%s] Found parent directory at block %d\n", __func__, parent_block_index);
+        
+        bool found = false;
+        for (int i = 0; i < parent_dir->subitem_count; i++) {
+            if (strcmp(parent_dir->subitem[i], name) == 0) {
+                strncpy(parent_dir->subitem[i], new_name, MAX_STRING_LENGTH - 1);
+                parent_dir->subitem[i][MAX_STRING_LENGTH - 1] = '\0';
+                found = true;
+                if (debug) printf("\t[%s] Updated parent's subitem list\n", __func__);
+                break;
+            }
+        }
+        if (!found) {
+            printf("Error: Could not find the directory in parent's subitem list\n");
+            return -1;
+        }
+    } else {
+        printf("Error: Could not find parent directory\n");
+        return -1;
+    }
+
+    // Update all child items to reflect the new parent name
+    for (int i = 0; i < dir->subitem_count; i++) {
+        int child_block_index = find_block(dir->subitem[i], dir->subitem_type[i]);
+        if (child_block_index != -1) {
+            if (dir->subitem_type[i]) { // If it's a directory
+                dir_type *child_dir = (dir_type*)(disk + child_block_index * BLOCK_SIZE);
+                strncpy(child_dir->top_level, new_name, MAX_STRING_LENGTH - 1);
+                child_dir->top_level[MAX_STRING_LENGTH - 1] = '\0';
+            } else { // If it's a file
+                file_type *child_file = (file_type*)(disk + child_block_index * BLOCK_SIZE);
+                strncpy(child_file->top_level, new_name, MAX_STRING_LENGTH - 1);
+                child_file->top_level[MAX_STRING_LENGTH - 1] = '\0';
+            }
+        }
+    }
+
+	// Update the descriptor block
+	descriptor_block *descriptor = (descriptor_block *)disk;
+	for (int i = 0; i < BLOCKS; i++) {
+		if (strcmp(descriptor->name[i], name) == 0 && descriptor->directory[i] == true) {
+			strncpy(descriptor->name[i], new_name, MAX_STRING_LENGTH - 1);
+			descriptor->name[i][MAX_STRING_LENGTH - 1] = '\0';
+			break;
+		}
 	}
 
-	//Rename the directory
-	if ( debug ) printf("\t[%s] Renaming Directory: [%s]\n", __func__, name );
-	//if the directory "name" is not found, return -1
-	if( edit_directory( name, "", size, true, true ) == -1 ) {
-		if (!debug ) printf( "%s: cannot rename file or directory '%s'\n", "mvdir", name );
-		return 0;
-	}
-	
-	//else the directory is renamed
-	if (debug) printf( "\t[%s] Directory Renamed Successfully: [%s]\n", __func__, size );
-	if (debug) print_directory(size); 
-	return 0;
+    if (debug) {
+        printf("\t[%s] Directory Renamed Successfully: [%s]\n", __func__, new_name);
+        printf("\t[%s] Directory details after renaming:\n", __func__);
+        printf("\t\tName: %s\n", dir->name);
+        printf("\t\tParent: %s\n", dir->top_level);
+        printf("\t\tSubitem count: %d\n", dir->subitem_count);
+    }
+
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/

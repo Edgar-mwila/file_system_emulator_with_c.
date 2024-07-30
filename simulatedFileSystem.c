@@ -53,7 +53,6 @@ int edit_descriptor ( int free_index, bool free, int name_index, char * name );
 int edit_descriptor_name (int index, char* new_name);
 int add_directory( char * name );
 int remove_directory( char * name );
-int rename_directory( char *name, char *new_name );
 int edit_directory ( char * name,  char*subitem_name, char *new_name, bool name_change, bool directory );
 int add_file( char * name, int size );
 int edit_file ( char * name, int size, char *new_name );
@@ -94,60 +93,14 @@ typedef struct {
 } descriptor_block;
 
 working_directory current;
-bool disk_allocated = false; // makes sure that do_root is first thing being called and only called once
+bool disk_allocated = false;
+SecuredItem secured_items[MAX_SECURED_ITEMS];
+int secured_item_count = 0;
+
+
+
 
 /*--------------------------------------------------------------------------------*/
-
-// int main(int argc, char *argv[])
-// {
-// 	(void)argc;
-// 	(void)*argv;
-//     char in[LINESIZE];
-//     char *cmd, *fnm, *fsz;
-//     char dummy[] = "";
-
-// 	//printf("sizeof file_type = %d\nsizeof dir_type = %d\nsize of descriptor_block = %d\nMAX_FILE_SIZE %d\n", sizeof(file_type), sizeof(dir_type), sizeof(descriptor_block), MAX_FILE_DATA_BLOCKS );
-
-// 	printf("Welcome to your file system\n");
-//     int n;
-//     char *a[LINESIZE];
-  
-//    while (fgets(in, LINESIZE, stdin) != NULL)
-//     {
-//       // commands are all of form "cmd filename filesize\n" with whitespace as a delimiter
-
-//       // parse input
-//       parse(in, &n, a);
-
-//       cmd = (n > 0) ? a[0] : dummy;
-//       fnm = (n > 1) ? a[1] : dummy;
-//       fsz = (n > 2) ? a[2] : dummy;
-
-//       if (debug) printf(":%s:%s:%s:\n", cmd, fnm, fsz);
-
-//       if (n == 0) continue;	// blank line
-
-//       int found = 0;
-     
-//       for (struct action *ptr = table; ptr->cmd != NULL; ptr++){  
-//             if (strcmp(ptr->cmd, cmd) == 0)
-//                 {
-//                     found = 1;
-                    
-//                     int ret = (ptr->action)(fnm, fsz);
-//                     //every function returns -1 on failure
-//                     if (ret == -1)
-//                         { printf("  %s %s %s: failed\n", cmd, fnm, fsz); }
-//                     break;
-//                 }
-// 	    }
-//       if (!found) { printf("command not found: %s\n", cmd);}
-//     }
-
-//   return 0;
-// }
-
-
 /*--------------------------------------------------------------------------------*/
 
 void parse(char *buf, int *argc, char *argv[])
@@ -532,26 +485,51 @@ int do_mkfil(char *name, char *size)
 /*--------------------------------------------------------------------------------*/
 
 // Remove a file
-int do_rmfil(char *name, char *size)
-{
-	if ( disk_allocated == false ) {
-		printf("Error: Disk not allocated\n");
-		return 0;
-	}
-	
-	(void)*size;
-	if ( debug ) printf("\t[%s] Removing File: [%s]\n", __func__, name);
+int do_rmfil(char *name, char *size) {
+    printf("[do_rmfil] Removing File: [%s]\n", name);
 
-		//If the file to be removed actually exists in current directory, remove it
-	if ( get_directory_subitem(current.directory, -1, name) == 0  ) {
-			remove_file(name);
-			return 0;
-		}
-	else{ // If it doesn't exist, print error and return 0
-		if ( debug ) printf( "\t\t\t[%s] Cannot remove file [%s], it does not exist in this directory\n", __func__, name );
-		if (!debug ) printf( "%s: %s: No such file or directory\n", "rmfil", name );
-		return 0;
-	}
+    // Find the parent directory
+    int parent_block = find_block(current.directory, true);
+    if (parent_block == -1) {
+        printf("[do_rmfil] Parent directory not found\n");
+        return -1;
+    }
+
+    dir_type *parent = (dir_type*)(disk + parent_block * BLOCK_SIZE);
+
+    // Find the file in the parent's subitems
+    int file_index = -1;
+    for (int i = 0; i < parent->subitem_count; i++) {
+        if (strcmp(parent->subitem[i], name) == 0 && !parent->subitem_type[i]) {
+            file_index = i;
+            break;
+        }
+    }
+
+    if (file_index == -1) {
+        printf("[do_rmfil] Cannot remove file [%s], it does not exist in this directory\n", name);
+        return -1;
+    }
+
+    // Find the file block
+    int file_block = find_block(name, false);
+    if (file_block == -1) {
+        printf("[do_rmfil] File block not found\n");
+        return -1;
+    }
+
+    // Clear the file block
+    memset(disk + file_block * BLOCK_SIZE, 0, BLOCK_SIZE);
+
+    // Remove the file from the parent's subitems
+    for (int i = file_index; i < parent->subitem_count - 1; i++) {
+        strcpy(parent->subitem[i], parent->subitem[i + 1]);
+        parent->subitem_type[i] = parent->subitem_type[i + 1];
+    }
+    parent->subitem_count--;
+
+    printf("[do_rmfil] File [%s] successfully removed\n", name);
+    return 0;
 }
 
 /*--------------------------------------------------------------------------------*/
@@ -579,6 +557,69 @@ int do_mvfil(char *name, char *size)
 	if (debug) print_file(size);
 
 	return 0;
+}
+
+/*--------------------------------------------------------------------------------*/
+
+// Function to write content to a file
+int do_write(char *filename, char *content) {
+    printf("Entering do_write for file: %s\n", filename);
+    
+    int block_index = find_block(filename, false);
+    if (block_index == -1) {
+        printf("File not found\n");
+        return -1;  // File not found
+    }
+
+    printf("File found at block index: %d\n", block_index);
+
+    file_type *file = (file_type*)(disk + block_index * BLOCK_SIZE);
+    printf("File structure accessed\n");
+
+    int content_length = strlen(content);
+    printf("Content length: %d\n", content_length);
+    
+    if (content_length > MAX_FILE_SIZE) {
+        printf("Content too large\n");
+        return -2;  // Content too large
+    }
+
+    printf("Copying content to file\n");
+    strncpy(file->content, content, MAX_FILE_SIZE - 1);
+    file->content[MAX_FILE_SIZE - 1] = '\0';  // Ensure null-termination
+    file->size = content_length;
+
+    printf("Calculating number of blocks needed\n");
+    // Calculate how many blocks we need
+    file->data_block_count = (content_length + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    
+    printf("Allocating blocks\n");
+    // Allocate blocks as needed
+    for (int i = 0; i < file->data_block_count; i++) {
+        if (file->data_block_index[i] == 0) {
+            file->data_block_index[i] = find_free_block();
+            if (file->data_block_index[i] == -1) {
+                printf("No free blocks available\n");
+                return -3;  // No free blocks available
+            }
+        }
+    }
+
+    printf("Write operation completed successfully\n");
+    return 0;  // Success
+}
+
+/*--------------------------------------------------------------------------------*/
+
+// Function to read content from a file
+char* do_read(char *filename) {
+    int block_index = find_block(filename, false);
+    if (block_index == -1) {
+        return NULL;  // File not found
+    }
+
+    file_type *file = (file_type*)(disk + block_index * BLOCK_SIZE);
+    return file->content;
 }
 
 /*--------------------------------------------------------------------------------*/
@@ -790,6 +831,17 @@ int find_block ( char *name, bool directory ) {
 	free(descriptor);
 	if ( debug ) printf("\t\t\t[%s] Block Not Found: Returning -1\n", __func__);
 	return -1;
+}
+
+/*--------------------------------------------------------------------------------*/
+
+int find_free_block() {
+    for (int i = 0; i < NUM_BLOCKS; i++) {
+        if (disk[i * BLOCK_SIZE] == 0) {  // Assuming 0 indicates a free block
+            return i;
+        }
+    }
+    return -1;  // No free blocks found
 }
 
 /*--------------------------------------------------------------------------------*/

@@ -17,6 +17,8 @@ GtkToolItem *delete_button;
 GtkToolItem *rename_button;
 GtkToolItem *details_button;
 GtkToolItem *secure_button;
+GtkToolItem *read_button;
+GtkToolItem *write_button;
 GtkWidget *back_button;
 GtkWidget *up_button;
 GtkWidget *path_bar;
@@ -49,56 +51,51 @@ static void log_event(const char *message) {
     }
 }
 
-static gboolean check_password(const char *name) {
-    char filename[256];
-    snprintf(filename, sizeof(filename), "%s.pwd", name);
-    
-    FILE *file = fopen(filename, "r");
-    if (!file) return FALSE;
-
-    char stored_password[256] = {0};
-    fgets(stored_password, sizeof(stored_password), file);
-    fclose(file);
-
-    GtkWidget *dialog = gtk_dialog_new_with_buttons("Enter Password", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
-                                                    "Cancel", GTK_RESPONSE_CANCEL, 
-                                                    "OK", GTK_RESPONSE_OK, 
-                                                    NULL);
-    GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-    GtkWidget *entry = gtk_entry_new();
-    gtk_entry_set_visibility(GTK_ENTRY(entry), FALSE);
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Enter password");
-    gtk_box_pack_start(GTK_BOX(content_area), entry, TRUE, TRUE, 0);
-    gtk_widget_show_all(dialog);
-
-    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
-    gboolean result = FALSE;
-    if (response == GTK_RESPONSE_OK) {
-        const gchar *entered_password = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (strcmp(entered_password, stored_password) == 0) {
-            result = TRUE;
-        } else {
-            GtkWidget *error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                GTK_DIALOG_MODAL,
-                GTK_MESSAGE_ERROR,
-                GTK_BUTTONS_OK,
-                "Incorrect password. Operation cancelled.");
-            gtk_dialog_run(GTK_DIALOG(error_dialog));
-            gtk_widget_destroy(error_dialog);
-        }
+static void store_password(const char *path, const char *password) {
+    if (secured_item_count < MAX_SECURED_ITEMS) {
+        strncpy(secured_items[secured_item_count].path, path, sizeof(secured_items[secured_item_count].path) - 1);
+        strncpy(secured_items[secured_item_count].password, password, sizeof(secured_items[secured_item_count].password) - 1);
+        secured_item_count++;
+    } else {
+        log_event("Maximum number of secured items reached");
     }
-    gtk_widget_destroy(dialog);
-    return result;
 }
 
-static void store_password(const char *name, const char *password) {
-    char filename[256];
-    snprintf(filename, sizeof(filename), "%s.pwd", name);
-    FILE *file = fopen(filename, "w");
-    if (file) {
-        fprintf(file, "%s", password);
-        fclose(file);
+static gboolean check_password(const char *path) {
+    for (int i = 0; i < secured_item_count; i++) {
+        if (strcmp(secured_items[i].path, path) == 0) {
+            GtkWidget *dialog = gtk_dialog_new_with_buttons("Enter Password", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
+                                                            "Cancel", GTK_RESPONSE_CANCEL, 
+                                                            "OK", GTK_RESPONSE_OK, 
+                                                            NULL);
+            GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+            GtkWidget *entry = gtk_entry_new();
+            gtk_entry_set_visibility(GTK_ENTRY(entry), FALSE);
+            gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Enter password");
+            gtk_box_pack_start(GTK_BOX(content_area), entry, TRUE, TRUE, 0);
+            gtk_widget_show_all(dialog);
+
+            gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+            gboolean result = FALSE;
+            if (response == GTK_RESPONSE_OK) {
+                const gchar *entered_password = gtk_entry_get_text(GTK_ENTRY(entry));
+                if (strcmp(entered_password, secured_items[i].password) == 0) {
+                    result = TRUE;
+                } else {
+                    GtkWidget *error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                        GTK_DIALOG_MODAL,
+                        GTK_MESSAGE_ERROR,
+                        GTK_BUTTONS_OK,
+                        "Incorrect password. Operation cancelled.");
+                    gtk_dialog_run(GTK_DIALOG(error_dialog));
+                    gtk_widget_destroy(error_dialog);
+                }
+            }
+            gtk_widget_destroy(dialog);
+            return result;
+        }
     }
+    return TRUE; // If the item is not found in the secured items list, it's not secured
 }
 
 static void refresh_view() {
@@ -113,9 +110,16 @@ static void refresh_view() {
 
     while (current_file != NULL) {
         GdkPixbuf *icon = current_file->is_directory ? folder_icon : file_icon;
-        char pwd_filename[256];
-        snprintf(pwd_filename, sizeof(pwd_filename), "%s.pwd", current_file->name);
-        gboolean is_secured = g_file_test(pwd_filename, G_FILE_TEST_EXISTS);
+        char full_path[512];
+        snprintf(full_path, sizeof(full_path), "%s/%s", current_path, current_file->name);
+        gboolean is_secured = FALSE;
+        
+        for (int i = 0; i < secured_item_count; i++) {
+            if (strcmp(secured_items[i].path, full_path) == 0) {
+                is_secured = TRUE;
+                break;
+            }
+        }
 
         gtk_list_store_append(store, &iter);
         gtk_list_store_set(store, &iter, 
@@ -126,7 +130,7 @@ static void refresh_view() {
                            -1);
         current_file = current_file->next;
     }
-
+    
     gtk_label_set_text(GTK_LABEL(path_bar), current_path);
     log_event("Directory contents refreshed");
 
@@ -247,33 +251,41 @@ static void delete_clicked(GtkToolButton *button, gpointer user_data) {
     if (selected_items) {
         GtkTreeIter iter;
         gchar *name;
-        gboolean is_directory;
+        gboolean is_directory, is_secured;
         
         gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
         gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 
                            COL_NAME, &name, 
-                           COL_IS_DIRECTORY, &is_directory, 
+                           COL_IS_DIRECTORY, &is_directory,
+                           COL_SECURED, &is_secured,
                            -1);
         
-        if (is_directory) {
-            // Call your rmdir function here
-            if (do_rmdir(name, "") == 0) {
-                log_event("Folder deleted successfully");
-            } else {
-                log_event("Error deleting folder");
-            }
+        char full_path[512];
+        snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+        
+        if (is_secured && !check_password(full_path)) {
+            log_event("Access denied: Incorrect password");
         } else {
-            // Call your rmfil function here
-            if (do_rmfil(name, "") == 0) {
-                log_event("File deleted successfully");
+            if (is_directory) {
+                // Call your rmdir function here
+                if (do_rmdir(name, "") == 0) {
+                    log_event("Folder deleted successfully");
+                } else {
+                    log_event("Error deleting folder");
+                }
             } else {
-                log_event("Error deleting file");
+                // Call your rmfil function here
+                if (do_rmfil(name, "") == 0) {
+                    log_event("File deleted successfully");
+                } else {
+                    log_event("Error deleting file");
+                }
             }
+            refresh_view();
         }
         
         g_free(name);
         g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
-        refresh_view();
     }
 }
 
@@ -282,79 +294,66 @@ static void rename_clicked(GtkToolButton *button, gpointer user_data) {
     if (selected_items) {
         GtkTreeIter iter;
         gchar *name;
-        gboolean is_directory;
+        gboolean is_directory, is_secured;
         
         gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
         gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 
                            COL_NAME, &name, 
-                           COL_IS_DIRECTORY, &is_directory, 
+                           COL_IS_DIRECTORY, &is_directory,
+                           COL_SECURED, &is_secured,
                            -1);
 
-        GtkWidget *dialog = gtk_dialog_new_with_buttons("Rename", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
-                                                        "Cancel", GTK_RESPONSE_CANCEL, 
-                                                        "Rename", GTK_RESPONSE_OK, 
-                                                        NULL);
-        GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
-        GtkWidget *entry = gtk_entry_new();
-        gtk_entry_set_text(GTK_ENTRY(entry), name);
-        gtk_box_pack_start(GTK_BOX(content_area), entry, TRUE, TRUE, 0);
-        gtk_widget_show_all(dialog);
+        char full_path[512];
+        snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+        
+        if (is_secured && !check_password(full_path)) {
+            log_event("Access denied: Incorrect password");
+        } else {
+            GtkWidget *dialog = gtk_dialog_new_with_buttons("Rename", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
+                                                            "Cancel", GTK_RESPONSE_CANCEL, 
+                                                            "Rename", GTK_RESPONSE_OK, 
+                                                            NULL);
+            GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+            GtkWidget *entry = gtk_entry_new();
+            gtk_entry_set_text(GTK_ENTRY(entry), name);
+            gtk_box_pack_start(GTK_BOX(content_area), entry, TRUE, TRUE, 0);
+            gtk_widget_show_all(dialog);
 
-        gint response = gtk_dialog_run(GTK_DIALOG(dialog));
-        if (response == GTK_RESPONSE_OK) {
-            const gchar *new_name = gtk_entry_get_text(GTK_ENTRY(entry));
-            if (g_strcmp0(new_name, "") != 0 && g_strcmp0(new_name, name) != 0) {
-                int result;
-                if (is_directory) {
-                    result = do_mvdir(name, (char *)new_name);
-                } else {
-                    result = do_mvfil(name, (char *)new_name);
-                }
-
-                if (result == 0) {
-                    log_event(is_directory ? "Folder renamed successfully" : "File renamed successfully");
-                    refresh_view();
-
-                    // Add this debug information
-                    char *temp_name = g_strdup(new_name);  // Create a non-const copy
-                    int block_index = find_block(temp_name, is_directory);
-                    if (block_index != -1) {
-                        if (is_directory) {
-                            dir_type *dir = (dir_type*)(disk + block_index * BLOCK_SIZE);
-                            printf("Debug: Renamed directory details:\n");
-                            printf("\tName: %s\n", dir->name);
-                            printf("\tParent: %s\n", dir->top_level);
-                            printf("\tSubitem count: %d\n", dir->subitem_count);
-                        } else {
-                            file_type *file = (file_type*)(disk + block_index * BLOCK_SIZE);
-                            printf("Debug: Renamed file details:\n");
-                            printf("\tName: %s\n", file->name);
-                            printf("\tParent: %s\n", file->top_level);
-                            printf("\tSize: %d\n", file->size);
-                        }
+            gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+            if (response == GTK_RESPONSE_OK) {
+                const gchar *new_name = gtk_entry_get_text(GTK_ENTRY(entry));
+                if (g_strcmp0(new_name, "") != 0 && g_strcmp0(new_name, name) != 0) {
+                    int result;
+                    if (is_directory) {
+                        result = do_mvdir(name, (char *)new_name);
                     } else {
-                        printf("Debug: Could not find renamed item [%s] after renaming\n", new_name);
+                        result = do_mvfil(name, (char *)new_name);
                     }
-                    g_free(temp_name);  // Free the temporary string
-                } else {
-                    const char *error_message = is_directory ? 
-                        "Error renaming folder. Please check if the destination name is valid and not already in use." :
-                        "Error renaming file. Please check if the destination name is valid and not already in use.";
-                    
-                    GtkWidget *error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                        GTK_DIALOG_MODAL,
-                        GTK_MESSAGE_ERROR,
-                        GTK_BUTTONS_OK,
-                        "%s", error_message);
-                    gtk_dialog_run(GTK_DIALOG(error_dialog));
-                    gtk_widget_destroy(error_dialog);
-                    
-                    log_event(is_directory ? "Error renaming folder" : "Error renaming file");
+
+                    if (result == 0) {
+                        log_event(is_directory ? "Folder renamed successfully" : "File renamed successfully");
+                        refresh_view();
+                    } else {
+                        const char *error_message = is_directory ? 
+                            "Error renaming folder. Please check if the destination name is valid and not already in use." :
+                            "Error renaming file. Please check if the destination name is valid and not already in use.";
+                        
+                        GtkWidget *error_dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                            GTK_DIALOG_MODAL,
+                            GTK_MESSAGE_ERROR,
+                            GTK_BUTTONS_OK,
+                            "%s", error_message);
+                        gtk_dialog_run(GTK_DIALOG(error_dialog));
+                        gtk_widget_destroy(error_dialog);
+                        
+                        log_event(is_directory ? "Error renaming folder" : "Error renaming file");
+                    }
                 }
             }
+            
+            gtk_widget_destroy(dialog);
         }
         
-        gtk_widget_destroy(dialog);
         g_free(name);
         g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
     }
@@ -393,28 +392,36 @@ static void details_clicked(GtkToolButton *button, gpointer user_data) {
     if (selected_items) {
         GtkTreeIter iter;
         gchar *name;
-        gboolean is_directory;
+        gboolean is_directory, is_secured;
         
         gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
         gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 
                            COL_NAME, &name, 
-                           COL_IS_DIRECTORY, &is_directory, 
+                           COL_IS_DIRECTORY, &is_directory,
+                           COL_SECURED, &is_secured,
                            -1);
         
-        // Get item details
-        char details[1024];
-        if (get_item_details(name, is_directory, details, sizeof(details)) == 0) {
-            // Show details in a dialog
-            GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(window),
-                                                       GTK_DIALOG_MODAL,
-                                                       GTK_MESSAGE_INFO,
-                                                       GTK_BUTTONS_OK,
-                                                       "Details for %s:\n\n%s",
-                                                       name, details);
-            gtk_dialog_run(GTK_DIALOG(dialog));
-            gtk_widget_destroy(dialog);
+        char full_path[512];
+        snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+        
+        if (is_secured && !check_password(full_path)) {
+            log_event("Access denied: Incorrect password");
         } else {
-            log_event("Error getting item details");
+            // Get item details
+            char details[1024];
+            if (get_item_details(name, is_directory, details, sizeof(details)) == 0) {
+                // Show details in a dialog
+                GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                                           GTK_DIALOG_MODAL,
+                                                           GTK_MESSAGE_INFO,
+                                                           GTK_BUTTONS_OK,
+                                                           "Details for %s:\n\n%s",
+                                                           name, details);
+                gtk_dialog_run(GTK_DIALOG(dialog));
+                gtk_widget_destroy(dialog);
+            } else {
+                log_event("Error getting item details");
+            }
         }
         
         g_free(name);
@@ -431,6 +438,9 @@ static void secure_clicked(GtkToolButton *button, gpointer user_data) {
         gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
         gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, COL_NAME, &name, -1);
 
+        char full_path[512];
+        snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+
         GtkWidget *dialog = gtk_dialog_new_with_buttons("Set Password", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
                                                         "Cancel", GTK_RESPONSE_CANCEL, 
                                                         "Set", GTK_RESPONSE_OK, 
@@ -446,11 +456,108 @@ static void secure_clicked(GtkToolButton *button, gpointer user_data) {
         if (response == GTK_RESPONSE_OK) {
             const gchar *password = gtk_entry_get_text(GTK_ENTRY(entry));
             if (strlen(password) > 0) {
-                store_password(name, password);
+                store_password(full_path, password);
+                log_event("Item secured successfully");
                 refresh_view();  // Refresh to show lock icon
             }
         }
         gtk_widget_destroy(dialog);
+        g_free(name);
+        g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
+    }
+}
+
+static void read_clicked(GtkToolButton *button, gpointer user_data) {
+    GList *selected_items = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(icon_view));
+    if (selected_items) {
+        GtkTreeIter iter;
+        gchar *name;
+        gboolean is_directory, is_secured;
+        
+        gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 
+                           COL_NAME, &name, 
+                           COL_IS_DIRECTORY, &is_directory,
+                           COL_SECURED, &is_secured,
+                           -1);
+        
+        if (!is_directory) {
+            char full_path[512];
+            snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+            
+            if (is_secured && !check_password(full_path)) {
+                log_event("Access denied: Incorrect password");
+            } else {
+                char *content = do_read(name);
+                if (content) {
+                    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(window),
+                                                               GTK_DIALOG_MODAL,
+                                                               GTK_MESSAGE_INFO,
+                                                               GTK_BUTTONS_OK,
+                                                               "File content:\n\n%s",
+                                                               content);
+                    gtk_dialog_run(GTK_DIALOG(dialog));
+                    gtk_widget_destroy(dialog);
+                } else {
+                    log_event("Error reading file");
+                }
+            }
+        } else {
+            log_event("Cannot read a directory");
+        }
+        
+        g_free(name);
+        g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
+    }
+}
+
+static void write_clicked(GtkToolButton *button, gpointer user_data) {
+    GList *selected_items = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(icon_view));
+    if (selected_items) {
+        GtkTreeIter iter;
+        gchar *name;
+        gboolean is_directory, is_secured;
+        
+        gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, 
+                           COL_NAME, &name, 
+                           COL_IS_DIRECTORY, &is_directory,
+                           COL_SECURED, &is_secured,
+                           -1);
+        
+        if (!is_directory) {
+            char full_path[512];
+            snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+            
+            if (is_secured && !check_password(full_path)) {
+                log_event("Access denied: Incorrect password");
+            } else {
+                GtkWidget *dialog = gtk_dialog_new_with_buttons("Write to File", GTK_WINDOW(window), GTK_DIALOG_MODAL, 
+                                                                "Cancel", GTK_RESPONSE_CANCEL, 
+                                                                "Write", GTK_RESPONSE_OK, 
+                                                                NULL);
+                GtkWidget *content_area = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+                GtkWidget *entry = gtk_entry_new();
+                gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Enter file content");
+                gtk_box_pack_start(GTK_BOX(content_area), entry, TRUE, TRUE, 0);
+                gtk_widget_show_all(dialog);
+
+                gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+                if (response == GTK_RESPONSE_OK) {
+                    const gchar *content = gtk_entry_get_text(GTK_ENTRY(entry));
+                    if (do_write(name, (char *)content) == 0) {
+                        log_event("File written successfully");
+                        refresh_view();
+                    } else {
+                        log_event("Error writing to file");
+                    }
+                }
+                gtk_widget_destroy(dialog);
+            }
+        } else {
+            log_event("Cannot write to a directory");
+        }
+        
         g_free(name);
         g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
     }
@@ -515,13 +622,26 @@ static void on_selection_changed(GtkIconView *icon_view, gpointer user_data) {
     } else {
         gtk_widget_set_sensitive(GTK_WIDGET(secure_button), FALSE);
     }
+    if (has_selection) {
+        GtkTreeIter iter;
+        gboolean is_directory;
+        
+        gtk_tree_model_get_iter(GTK_TREE_MODEL(store), &iter, (GtkTreePath*)selected_items->data);
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, COL_IS_DIRECTORY, &is_directory, -1);
+        
+        gtk_widget_set_sensitive(GTK_WIDGET(read_button), !is_directory);
+        gtk_widget_set_sensitive(GTK_WIDGET(write_button), !is_directory);
+    } else {
+        gtk_widget_set_sensitive(GTK_WIDGET(read_button), FALSE);
+        gtk_widget_set_sensitive(GTK_WIDGET(write_button), FALSE);
+    }
     
     g_list_free_full(selected_items, (GDestroyNotify)gtk_tree_path_free);
 }
 
 static void activate(GtkApplication *app, gpointer user_data) {
     window = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(window), "File System GUI");
+    gtk_window_set_title(GTK_WINDOW(window), "EDGAR's FILE SYSTEM EMULATOR");
     gtk_window_set_default_size(GTK_WINDOW(window), 800, 600);
 
     grid = gtk_grid_new();
@@ -557,6 +677,14 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_sensitive(GTK_WIDGET(secure_button), FALSE);
     gtk_toolbar_insert(GTK_TOOLBAR(toolbar), secure_button, -1);
     g_signal_connect(secure_button, "clicked", G_CALLBACK(secure_clicked), NULL);
+
+    read_button = gtk_tool_button_new(NULL, "Read File");
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), read_button, -1);
+    g_signal_connect(read_button, "clicked", G_CALLBACK(read_clicked), NULL);
+
+    write_button = gtk_tool_button_new(NULL, "Write to File");
+    gtk_toolbar_insert(GTK_TOOLBAR(toolbar), write_button, -1);
+    g_signal_connect(write_button, "clicked", G_CALLBACK(write_clicked), NULL);
 
     GtkWidget *path_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     gtk_grid_attach(GTK_GRID(grid), path_box, 0, 1, 2, 1);
